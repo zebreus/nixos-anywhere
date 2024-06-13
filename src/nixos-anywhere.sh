@@ -38,6 +38,13 @@ Options:
 * --extra-files <path>
   path to a directory to copy into the root of the new nixos installation.
   Copied files will be owned by root.
+* --post-kexec-extra-command <command>
+  run a command in the installer environment after kexec but before installation.
+  Can be repeated.
+* --pre-kexec-extra-command <command>
+  run a command in the installer environment before kexec. Can be repeated.
+* --post-install-extra-command <command>
+  run a command in the installer environment after installation. Can be repeated.
 * --disk-encryption-keys <remote_path> <local_path>
   copy the contents of the file or pipe in local_path to remote_path in the installer environment,
   after kexec but before installation. Can be repeated.
@@ -84,6 +91,9 @@ fi
 post_kexec_ssh_port=22
 
 declare -A disk_encryption_keys
+declare -a post_kexec_extra_commands
+declare -a pre_kexec_extra_commands
+declare -a post_install_extra_commands
 declare -a nix_copy_options
 declare -a ssh_copy_id_args
 declare -a ssh_args
@@ -144,6 +154,18 @@ while [[ $# -gt 0 ]]; do
     ;;
   --extra-files)
     extra_files=$2
+    shift
+    ;;
+  --post-kexec-extra-command)
+    post_kexec_extra_commands+=("$2")
+    shift
+    ;;
+  --pre-kexec-extra-command)
+    pre_kexec_extra_commands+=("$2")
+    shift
+    ;;
+  --post-install-extra-command)
+    post_install_extra_commands+=("$2")
     shift
     ;;
   --disk-encryption-keys)
@@ -380,6 +402,11 @@ if [[ ${is_kexec-n} == "n" ]] && [[ ${is_installer-n} == "n" ]]; then
     esac
   fi
 
+  for command in "${pre_kexec_extra_commands[@]}"; do
+    step "Running custom command before kexec: '$command'"
+    ssh_ "$command"
+  done
+
   step Switching system into kexec
   ssh_ sh <<SSH
 set -efu ${enable_debug}
@@ -435,6 +462,11 @@ fi
 for path in "${!disk_encryption_keys[@]}"; do
   step "Uploading ${disk_encryption_keys[$path]} to $path"
   ssh_ "umask 077; cat > $path" <"${disk_encryption_keys[$path]}"
+done
+
+for command in "${post_kexec_extra_commands[@]}"; do
+  step "Running custom command: '$command'"
+  ssh_ "$command"
 done
 
 if [[ ${build_on_remote-n} == "y" ]]; then
@@ -515,6 +547,12 @@ if command -v zpool >/dev/null; then
   umount -Rv /mnt/
   zpool export -a || true
 fi
+
+# Run post-install commands
+$(for command in "${post_install_extra_commands[@]}"; do
+  echo "$command"
+done)
+
 # We will reboot in background so we can cleanly finish the script before the hosts go down.
 # This makes integration into scripts easier
 nohup sh -c '${maybe_reboot}' >/dev/null &
